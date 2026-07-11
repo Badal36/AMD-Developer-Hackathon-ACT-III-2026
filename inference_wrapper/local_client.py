@@ -50,14 +50,55 @@ def best_model(models: List[Dict]) -> Optional[Dict]:
     return max(models, key=lambda m: score_model(m["name"]))
 
 
+# ── ChatML system prompt for qwen2.5 / openelm sub-1B models ────────────────
+# These models are trained with ChatML tokens. Without proper role wrapping,
+# they default to free-form continuation which causes hallucination & loops.
+_SYSTEM_PROMPT = (
+    "<|im_start|>system\n"
+    "You are a concise, factual assistant. Rules:\n"
+    "1. Answer directly — no preamble, no filler phrases.\n"
+    "2. If you are not confident, say exactly: I don't know.\n"
+    "3. Keep answers under 3 sentences unless explicitly asked for more.\n"
+    "4. Do NOT repeat yourself. Stop immediately after answering.\n"
+    "<|im_end|>\n"
+)
+
+
+def _build_prompt(user_prompt: str) -> str:
+    """Wrap a user prompt in ChatML format for qwen2.5/openelm models."""
+    return (
+        _SYSTEM_PROMPT
+        + f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+        + "<|im_start|>assistant\n"
+    )
+
+
 def generate(prompt: str, model_name: str, max_tokens: int = 512) -> Tuple[str, float]:
-    """Returns (response_text, latency_s). Uses 0 Fireworks tokens."""
+    """Returns (response_text, latency_s). Uses 0 Fireworks tokens.
+    
+    Enforces deterministic inference:
+      - temperature=0  : greedy decoding, no sampling stochasticity
+      - seed=42        : reproducible outputs on identical prompts
+      - repeat_penalty : prevents looping without degrading quality
+    ChatML wrapping activates the model's role-switching mechanism.
+    """
     t0 = time.time()
+    full_prompt = _build_prompt(prompt)
     try:
         r = requests.post(
             f"{OLLAMA_BASE}/api/generate",
-            json={"model": model_name, "prompt": prompt,
-                  "stream": False, "options": {"num_predict": max_tokens}},
+            json={
+                "model":  model_name,
+                "prompt": full_prompt,
+                "stream": False,
+                "options": {
+                    "num_predict":    max_tokens,
+                    "temperature":    0.0,   # DETERMINISTIC — no stochastic sampling
+                    "seed":           42,    # REPRODUCIBLE across identical prompts
+                    "repeat_penalty": 1.05,  # LOOP PREVENTION (>1.1 degrades quality)
+                    "top_p":          1.0,   # Compatible with greedy temp=0
+                },
+            },
             timeout=90,
         )
         elapsed = time.time() - t0
@@ -108,6 +149,10 @@ def verify_local_response(prompt: str, response: str, domain: str = "factual") -
     words = r.split()
     if len(words) < 3:
         return False, f"Response too short ({len(words)} words) — likely model failure"
+    
+    # Minimum quality score check: tiny models often output trivial content
+    if len(words) < 5 and any(w.lower() in ["ok", "yes", "no", "sure"] for w in words):
+        return False, "Response too trivial/short — escalating to cloud"
 
     # Check 2: Cop-out / refusal phrases
     lower_r = r.lower()
@@ -147,16 +192,32 @@ def verify_local_response(prompt: str, response: str, domain: str = "factual") -
         if not has_code_structure:
             return False, "Code domain: response contains no recognisable code structure"
 
-    # Check 5: [NEW] LLM Sanitizer (Tier 1 judge)
+    # Check 5: LLM-as-a-Judge Sanitizer (Tier 1 judge)
+    # CRITICAL DESIGN: requires explicit "YES" — any other response escalates to cloud.
+    # This is intentionally strict:
+    #   - If Tier 1 says "No" / "NO" / "No." → escalate (correct)
+    #   - If Tier 1 response is truncated, ambiguous, or errors → escalate (safe default)
+    #   - Only an explicit "YES" (case-insensitive, anywhere in the first word) passes.
+    # This prevents factually wrong but well-formed local answers from reaching the user.
     try:
-        from inference_wrapper.model_clients import get_client
-        tier1_client = get_client("tier1")
-        judge_prompt = f"You are an evaluator. The user asked: '{prompt}'. The local model answered: '{response}'. Is this answer correct? Reply only YES or NO."
-        judge_result = tier1_client.generate(judge_prompt, max_tokens=10).strip().upper()
-        if "NO" in judge_result:
-            return False, "LLM Sanitizer rejected answer (Tier 1 marked it as incorrect)"
-    except Exception as e:
-        # If the sanitizer fails (e.g. network error), we assume the answer is fine to not block the pipeline
-        pass
+        from inference_wrapper.fireworks_client import call_tier
+        judge_prompt = (
+            f"Task: Judge if the assistant's answer is factually correct and complete.\n"
+            f"Question: {prompt}\n"
+            f"Answer: {response}\n"
+            f"Reply with exactly one word — YES if the answer is correct, NO if it is wrong or incomplete."
+        )
+        judge_text, _tokens, _lat = call_tier("tier1", judge_prompt, max_tokens=10)
+        # Require EXPLICIT yes — normalise to first word only
+        first_word = judge_text.strip().split()[0].upper().strip(".,!?") if judge_text.strip() else ""
+        if first_word != "YES":
+            return False, (
+                f"LLM Sanitizer: Tier 1 judge did not confirm answer "
+                f"(replied: '{judge_text.strip()[:40]}') — escalating to Cloud"
+            )
+    except Exception as ex:
+        # Sanitizer failed (network/API error) — FAIL SAFE: escalate rather than silently pass.
+        # We cannot trust the local answer if we can't verify it.
+        return False, f"LLM Sanitizer unavailable ({type(ex).__name__}) — escalating to Cloud as fail-safe"
 
-    return True, "Response passes all quality checks and Sanitizer"
+    return True, "Response passes all quality checks and Sanitizer (Tier 1 confirmed YES)"

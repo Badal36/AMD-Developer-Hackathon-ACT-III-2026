@@ -359,28 +359,54 @@ def route_prompt(prompt: str, active_model: str | None,
     capability_profile = load_profile(active_model) if active_model else None
 
     # =========================================================================
-    # STEP 1: Gate 0 -- Simplicity Pre-Filter
+    # STEP 1: Gate 0 -- Two-Layer Simplicity Pre-Filter
     # =========================================================================
-    CONSOLE.print(Rule("[bold green]Step 1  Gate 0 -- Capability-Aware Routing[/bold green]", style="green"))
+    # Layer A: Heuristic gate (runs first, <1ms, catches hard blockers)
+    #   - Always-local: pure arithmetic, greetings, ultra-short
+    #   - Always-remote: code blocks, math proofs, MCQs, long prompts
+    # Layer B: Semantic ML Router (runs second, only for ambiguous prompts)
+    #   - Uses 384d embeddings + LogisticRegression + Platt Scaling
+    #   - Enforces 60% confidence floor before allowing local routing
+    # This series wiring ensures hard categorical rules can never be overridden
+    # by an overconfident embedding.
+    # =========================================================================
+    CONSOLE.print(Rule("[bold green]Step 1  Gate 0 -- Two-Layer Routing[/bold green]", style="green"))
 
-    # Compute model context first, then call gate
     has_local  = bool(active_model and cfg.get("models", {}).get(active_model))
-
     model_data = cfg.get("models", {}).get(active_model, {}) if active_model else {}
     model_acc  = model_data.get("calibration_acc", 0.0)
     src_stats  = model_data.get("source_stats", {})
 
-    from inference_wrapper.simplicity_gate import _local_threshold
+    from inference_wrapper.simplicity_gate import is_trivially_simple, _local_threshold
     gate_threshold = _local_threshold(model_acc) if has_local else "n/a"
 
     t0 = time.time()
     if has_local:
-        is_simple, gate_reason, gate_conf = predict_local_viability(prompt)
+        # Layer A: Fast heuristic gate (hard blockers / always-local)
+        heuristic_simple, heuristic_reason, heuristic_conf = is_trivially_simple(
+            prompt, feats, model_acc, src_stats, capability_profile
+        )
+
+        if not heuristic_simple and heuristic_conf < 0.3:
+            # Heuristic is CERTAIN this is complex (code proof, MCQ, very long)
+            # Skip semantic router entirely — save the embedding latency
+            is_simple, gate_reason, gate_conf = False, heuristic_reason, heuristic_conf
+            routing_mode = "[dim]Heuristic BLOCK (skipped ML router)[/dim]"
+        else:
+            # Layer B: Semantic ML router for ambiguous middle-ground
+            is_simple, gate_reason, gate_conf = predict_local_viability(prompt)
+            # If ML router says local but heuristic says complex, heuristic wins
+            if is_simple and not heuristic_simple and heuristic_conf >= 0.15:
+                is_simple  = False
+                gate_reason = f"Heuristic override: {heuristic_reason}"
+                gate_conf   = heuristic_conf
+                routing_mode = "[yellow]ML→Heuristic Override[/yellow]"
+            else:
+                routing_mode = "[cyan]ML Semantic Router[/cyan]"
     else:
         is_simple, gate_reason, gate_conf = False, "No local model", 0.0
+        routing_mode = "[dim]Disabled[/dim]"
     gms = (time.time() - t0) * 1000
-
-    routing_mode  = "[cyan]ML Semantic Router[/cyan]" if has_local else "[dim]Disabled[/dim]"
 
     gt = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
     gt.add_column("Label", style="dim", width=22)

@@ -26,8 +26,8 @@
   "test_macro_f1": 0.8203,
   "all_model_results": {
     "XGBoost (tuned)": {
-      "acc": 0.8077,
-      "f1": 0.7981
+      "acc": 0.7885,
+      "f1": 0.7809
     },
     "LightGBM (tuned)": {
       "acc": 0.8333,
@@ -35,7 +35,7 @@
     },
     "Ensemble (XGB+LGB)": {
       "acc": 0.8205,
-      "f1": 0.8092
+      "f1": 0.8104
     }
   },
   "label_map": {
