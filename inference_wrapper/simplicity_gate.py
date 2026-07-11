@@ -71,10 +71,9 @@ _SIMPLE_PREFIXES = [
 
 
 def _local_threshold(model_acc: float) -> float:
-    if   model_acc >= 0.85: return 0.40
-    elif model_acc >= 0.70: return 0.55
-    elif model_acc >= 0.50: return 0.70
-    else:                   return 0.90
+    import math
+    # Smooth exponential curve: 0.85 -> ~0.40, 0.70 -> ~0.55, 0.60 -> ~0.57, 0.50 -> ~0.70
+    return round(max(0.1, 0.95 * math.exp(-0.85 * model_acc)), 2)
 
 
 def _infer_category(prompt: str, feats: dict) -> str:

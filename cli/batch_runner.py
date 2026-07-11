@@ -45,7 +45,7 @@ load_dotenv(ROOT / ".env")
 
 from inference_wrapper.feature_extractor import extract_features
 from inference_wrapper.router_core       import predict
-from inference_wrapper.simplicity_gate   import is_trivially_simple
+from inference_wrapper.semantic_router   import predict_local_viability
 from inference_wrapper.local_client      import (
     detect_ollama, generate as local_gen, verify_local_response
 )
@@ -66,11 +66,10 @@ def route_one(prompt: str, active_model: str | None, cfg: dict) -> dict:
     src_stats  = model_data.get("source_stats", {})
     has_local  = bool(active_model and model_data)
 
-    is_simple, gate_reason, gate_conf = is_trivially_simple(
-        prompt, feats, model_acc,
-        src_stats if has_local else None,
-        capability_profile=capability_profile if has_local else None,
-    )
+    if has_local:
+        is_simple, gate_reason, gate_conf = predict_local_viability(prompt)
+    else:
+        is_simple, gate_reason, gate_conf = False, "No local model", 0.0
 
     dest        = "tier2"
     tokens_used = 0
@@ -87,7 +86,7 @@ def route_one(prompt: str, active_model: str | None, cfg: dict) -> dict:
             from inference_wrapper.difficulty_classifier import classify
             _domain = classify(prompt, feats).domain
 
-        is_valid, _ = verify_local_response(raw_response, domain=_domain)
+        is_valid, _ = verify_local_response(prompt, raw_response, domain=_domain)
 
         if is_valid:
             response   = raw_response

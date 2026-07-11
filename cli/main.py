@@ -32,7 +32,7 @@ from rich.markup   import escape
 
 from inference_wrapper.feature_extractor import extract_features
 from inference_wrapper.router_core       import predict
-from inference_wrapper.simplicity_gate   import is_trivially_simple
+from inference_wrapper.semantic_router     import predict_local_viability
 from inference_wrapper.local_client      import detect_ollama, score_model, generate as local_gen, verify_local_response
 from inference_wrapper.fireworks_client  import call_tier, TIER_DISPLAY
 from calibration.profile                 import load_profile
@@ -124,7 +124,7 @@ def check_and_calibrate(cfg: dict, interactive: bool = True) -> dict:
             t.add_row(name, str(cap),
                       "[green]Calibrated[/green]",
                       f"{d['calibration_acc']*100:.1f}%",
-                      str(d["local_threshold"]))
+                      str(d.get("local_threshold", "N/A")))
         else:
             t.add_row(name, str(cap),
                       "[yellow]Not calibrated[/yellow]", "--", "--")
@@ -310,11 +310,11 @@ def select_active_model(cfg: dict, interactive: bool = True) -> str | None:
     CONSOLE.print("\n  [bold]Select local model for this session:[/bold]")
     for i, (name, data) in enumerate(qualified):
         comp   = _composite_score(name, data)
-        local_pct = int((1 - data["local_threshold"]) * 100)
+        local_pct = int((1 - data.get("local_threshold", 1.0)) * 100)
         CONSOLE.print(f"  [{i+1}] [cyan]{name}[/cyan]  "
                       f"cal={data['calibration_acc']*100:.0f}%  "
                       f"composite={comp:.3f}  "
-                      f"threshold={data['local_threshold']}  "
+                      f"threshold={data.get('local_threshold', 'N/A')}  "
                       f"~{local_pct}% routed locally")
     CONSOLE.print(f"  [{len(qualified)+1}] Remote-only (no local model)")
 
@@ -374,18 +374,13 @@ def route_prompt(prompt: str, active_model: str | None,
     gate_threshold = _local_threshold(model_acc) if has_local else "n/a"
 
     t0 = time.time()
-    is_simple, gate_reason, gate_conf = is_trivially_simple(
-        prompt, feats, model_acc,
-        src_stats if has_local else None,
-        capability_profile=capability_profile if has_local else None,
-    )
+    if has_local:
+        is_simple, gate_reason, gate_conf = predict_local_viability(prompt)
+    else:
+        is_simple, gate_reason, gate_conf = False, "No local model", 0.0
     gms = (time.time() - t0) * 1000
 
-    # Detect which routing path was used
-    using_profile = (capability_profile is not None and has_local
-                     and gate_reason.startswith("Profile ["))
-    routing_mode  = "[cyan]Profile (calibrated)[/cyan]" if using_profile \
-                    else "[dim]Legacy heuristic[/dim]"
+    routing_mode  = "[cyan]ML Semantic Router[/cyan]" if has_local else "[dim]Disabled[/dim]"
 
     gt = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
     gt.add_column("Label", style="dim", width=22)
@@ -394,10 +389,6 @@ def route_prompt(prompt: str, active_model: str | None,
     gt.add_row("Decision",        gate_reason)
     gt.add_row("Confidence",      f"[bold]{gate_conf:.2f}[/bold]")
     gt.add_row("Local model",     f"[cyan]{active_model or 'None'}[/cyan]")
-    if using_profile and capability_profile:
-        gt.add_row("Profile summary", f"[dim]{capability_profile.summary()}[/dim]")
-    else:
-        gt.add_row("Model cal acc",   f"{model_acc*100:.1f}%" if has_local else "n/a")
     gt.add_row("Gate latency",    f"{gms:.2f}ms (feat extract: {fms:.1f}ms)")
     CONSOLE.print(gt)
 
@@ -425,14 +416,14 @@ def route_prompt(prompt: str, active_model: str | None,
             from inference_wrapper.difficulty_classifier import classify
             _gate4_domain = classify(prompt, feats).domain
 
-        is_valid, verify_reason = verify_local_response(raw_response, domain=_gate4_domain)
+        is_valid, verify_reason = verify_local_response(prompt, raw_response, domain=_gate4_domain)
 
         if is_valid:
             response       = raw_response
             tokens_baseline = max(len(response.split()) * 3, 150)
             tokens_saved    = tokens_baseline
             dest = "local"
-            CONSOLE.print(f"  [dim]Gate 4 ✓ {verify_reason}[/dim]")
+            CONSOLE.print(f"  [dim]Gate 4 PASS {verify_reason}[/dim]")
         else:
             # Gate 4 FAILED: local model produced garbage — escalate silently to Tier1
             CONSOLE.print(Panel(

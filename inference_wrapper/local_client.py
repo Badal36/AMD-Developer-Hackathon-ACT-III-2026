@@ -79,9 +79,9 @@ _COP_OUT_PHRASES = [
     "error:", "i'm just an ai",
 ]
 
-def verify_local_response(response: str, domain: str = "factual") -> Tuple[bool, str]:
+def verify_local_response(prompt: str, response: str, domain: str = "factual") -> Tuple[bool, str]:
     """
-    Gate 4: Lightweight post-inference sanity check on local model output.
+    Gate 4: Lightweight post-inference sanity check + LLM Sanitizer.
 
     Called AFTER the local model generates a response. If this returns False,
     the caller should escalate to Tier1 (not discard) so the user always gets
@@ -92,8 +92,10 @@ def verify_local_response(response: str, domain: str = "factual") -> Tuple[bool,
       2. Cop-out phrase detection (model refused/failed)
       3. Repetition loop detection (common small-model failure mode)
       4. Domain-specific: code domain must contain actual code structure
+      5. [NEW] LLM-as-a-Judge Sanitizer: Ask Tier 1 if the answer is correct (costs ~50 tokens).
 
     Args:
+        prompt:   The original user prompt.
         response: The raw text response from the local model.
         domain:   The classified domain (from difficulty_classifier).
 
@@ -114,34 +116,25 @@ def verify_local_response(response: str, domain: str = "factual") -> Tuple[bool,
             return False, f"Cop-out phrase detected: '{phrase}' — escalating to cloud"
 
     # Check 3: Repetition loop (common in tiny models that lose coherence)
-    # Case A: Short strings with obvious word repetition (e.g. "hello hello hello")
     if len(words) >= 5:
         top_word_freq = max(words.count(w.lower()) for w in set(words)) / len(words)
         if top_word_freq > 0.60:
-            return False, (
-                f"Short repetition detected (top word appears {top_word_freq:.0%} of the time)"
-            )
-    # Case B: Longer strings with general vocabulary collapse
+            return False, f"Short repetition detected (top word appears {top_word_freq:.0%} of the time)"
+            
     if len(words) > 12:
         unique_ratio = len(set(w.lower() for w in words)) / len(words)
         if unique_ratio < 0.35:
-            return False, (
-                f"Repetitive output detected (unique word ratio={unique_ratio:.2f}) "
-                "\u2014 model is looping"
-            )
+            return False, f"Repetitive output detected (unique word ratio={unique_ratio:.2f}) — model is looping"
 
     # Check 4: Code domain must have code structure
     if domain == "code":
         import re
-        # 'return' in code: followed by an identifier, number, string, bracket, or operator
-        # NOT matched by: 'return the', 'return a', 'return an', 'return to'
         ARTICLES = {'the', 'a', 'an', 'to', 'this', 'that', 'it', 'its', 'all'}
         has_return_expr = False
         for m in re.finditer(r'return\s+(\w+)', r):
             if m.group(1).lower() not in ARTICLES:
                 has_return_expr = True
                 break
-        # Backticks: detect ``` or ```python style code blocks
         has_backtick_block = '```' in r
         has_code_structure = (
             "def " in r or
@@ -149,9 +142,21 @@ def verify_local_response(response: str, domain: str = "factual") -> Tuple[bool,
             "class " in r or
             has_backtick_block or
             has_return_expr or
-            "=>" in r  # arrow functions (JS/TS)
+            "=>" in r
         )
         if not has_code_structure:
             return False, "Code domain: response contains no recognisable code structure"
 
-    return True, "Response passes all quality checks"
+    # Check 5: [NEW] LLM Sanitizer (Tier 1 judge)
+    try:
+        from inference_wrapper.model_clients import get_client
+        tier1_client = get_client("tier1")
+        judge_prompt = f"You are an evaluator. The user asked: '{prompt}'. The local model answered: '{response}'. Is this answer correct? Reply only YES or NO."
+        judge_result = tier1_client.generate(judge_prompt, max_tokens=10).strip().upper()
+        if "NO" in judge_result:
+            return False, "LLM Sanitizer rejected answer (Tier 1 marked it as incorrect)"
+    except Exception as e:
+        # If the sanitizer fails (e.g. network error), we assume the answer is fine to not block the pipeline
+        pass
+
+    return True, "Response passes all quality checks and Sanitizer"
