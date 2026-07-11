@@ -49,7 +49,6 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 #   - openelm 270M       ~140MB  | best code routing (21.6% cal acc)
 #   - qwen3:0.6b         ~523MB  | best overall accuracy (new gen)
 #   - deepseek-r1:1.5b   ~1.1GB  | best math/reasoning
-#   - llama3.2:1b        ~638MB  | reliable general-purpose fallback
 RUN ollama serve > /var/log/ollama_build.log 2>&1 & \
     echo "Waiting for Ollama build daemon..." && \
     for i in {1..20}; do if curl -s http://127.0.0.1:11434/api/tags > /dev/null; then break; fi; sleep 1; done && \
@@ -59,7 +58,6 @@ RUN ollama serve > /var/log/ollama_build.log 2>&1 & \
     echo "Pulling openelm 270M..."    && ollama pull hf.co/mradermacher/OpenELM-270M-GGUF && \
     echo "Pulling qwen3:0.6b..."      && ollama pull qwen3:0.6b      && \
     echo "Pulling deepseek-r1:1.5b..." && ollama pull deepseek-r1:1.5b && \
-    echo "Pulling llama3.2:1b..."     && ollama pull llama3.2:1b     && \
     echo "All models baked in." && ollama list
 
 # ── Copy project source ───────────────────────────────────────────────────
