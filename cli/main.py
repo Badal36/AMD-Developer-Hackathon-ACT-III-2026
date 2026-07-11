@@ -232,6 +232,7 @@ def recalibrate_model_flow(cfg: dict, target_model: str = None) -> dict:
         CONSOLE.print(f"\n  Recalibrating [cyan]{name}[/cyan] with improved scorer...")
         result = calibrate_model(name, prompts)
         cfg.setdefault("models", {})[name] = result
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
         CONSOLE.print(f"  [green]Saved: acc={result['calibration_acc']*100:.1f}%  "
                       f"threshold={result['local_threshold']}[/green]")
