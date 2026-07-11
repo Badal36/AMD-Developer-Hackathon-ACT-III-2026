@@ -67,3 +67,91 @@ def generate(prompt: str, model_name: str, max_tokens: int = 512) -> Tuple[str, 
         return "[Ollama timeout — model too slow]", time.time() - t0
     except Exception as e:
         return f"[Ollama error: {e}]", time.time() - t0
+
+
+# Gate 4: Local Correctness Verification
+# ---------------------------------------------------------------------------
+# Phrases that indicate the model refused or failed to answer.
+_COP_OUT_PHRASES = [
+    "i cannot", "i can't", "i don't know", "i am unable", "i'm unable",
+    "as an ai language model", "as an ai", "i'm sorry, but", "i apologize",
+    "i have no information", "i have no knowledge", "[ollama", "[error",
+    "error:", "i'm just an ai",
+]
+
+def verify_local_response(response: str, domain: str = "factual") -> Tuple[bool, str]:
+    """
+    Gate 4: Lightweight post-inference sanity check on local model output.
+
+    Called AFTER the local model generates a response. If this returns False,
+    the caller should escalate to Tier1 (not discard) so the user always gets
+    a valid answer.
+
+    Checks:
+      1. Minimum length (at least 3 words)
+      2. Cop-out phrase detection (model refused/failed)
+      3. Repetition loop detection (common small-model failure mode)
+      4. Domain-specific: code domain must contain actual code structure
+
+    Args:
+        response: The raw text response from the local model.
+        domain:   The classified domain (from difficulty_classifier).
+
+    Returns:
+        (is_valid: bool, reason: str)
+    """
+    r = response.strip()
+
+    # Check 1: Minimum length
+    words = r.split()
+    if len(words) < 3:
+        return False, f"Response too short ({len(words)} words) — likely model failure"
+
+    # Check 2: Cop-out / refusal phrases
+    lower_r = r.lower()
+    for phrase in _COP_OUT_PHRASES:
+        if phrase in lower_r:
+            return False, f"Cop-out phrase detected: '{phrase}' — escalating to cloud"
+
+    # Check 3: Repetition loop (common in tiny models that lose coherence)
+    # Case A: Short strings with obvious word repetition (e.g. "hello hello hello")
+    if len(words) >= 5:
+        top_word_freq = max(words.count(w.lower()) for w in set(words)) / len(words)
+        if top_word_freq > 0.60:
+            return False, (
+                f"Short repetition detected (top word appears {top_word_freq:.0%} of the time)"
+            )
+    # Case B: Longer strings with general vocabulary collapse
+    if len(words) > 12:
+        unique_ratio = len(set(w.lower() for w in words)) / len(words)
+        if unique_ratio < 0.35:
+            return False, (
+                f"Repetitive output detected (unique word ratio={unique_ratio:.2f}) "
+                "\u2014 model is looping"
+            )
+
+    # Check 4: Code domain must have code structure
+    if domain == "code":
+        import re
+        # 'return' in code: followed by an identifier, number, string, bracket, or operator
+        # NOT matched by: 'return the', 'return a', 'return an', 'return to'
+        ARTICLES = {'the', 'a', 'an', 'to', 'this', 'that', 'it', 'its', 'all'}
+        has_return_expr = False
+        for m in re.finditer(r'return\s+(\w+)', r):
+            if m.group(1).lower() not in ARTICLES:
+                has_return_expr = True
+                break
+        # Backticks: detect ``` or ```python style code blocks
+        has_backtick_block = '```' in r
+        has_code_structure = (
+            "def " in r or
+            "function " in r.lower() or
+            "class " in r or
+            has_backtick_block or
+            has_return_expr or
+            "=>" in r  # arrow functions (JS/TS)
+        )
+        if not has_code_structure:
+            return False, "Code domain: response contains no recognisable code structure"
+
+    return True, "Response passes all quality checks"

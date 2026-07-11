@@ -33,7 +33,7 @@ from rich.markup   import escape
 from inference_wrapper.feature_extractor import extract_features
 from inference_wrapper.router_core       import predict
 from inference_wrapper.simplicity_gate   import is_trivially_simple
-from inference_wrapper.local_client      import detect_ollama, score_model, generate as local_gen
+from inference_wrapper.local_client      import detect_ollama, score_model, generate as local_gen, verify_local_response
 from inference_wrapper.fireworks_client  import call_tier, TIER_DISPLAY
 from calibration.profile                 import load_profile
 
@@ -64,11 +64,16 @@ DEMO_PROMPTS = [
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        try:
-            return json.loads(CONFIG_PATH.read_text())
-        except Exception:
-            pass
+    """Load config with automatic backup recovery to prevent data loss."""
+    bak_path = CONFIG_PATH.with_suffix(".json.bak")
+    for path in [CONFIG_PATH, bak_path]:
+        if path.exists():
+            try:
+                cfg = json.loads(path.read_text())
+                if "models" in cfg:
+                    return cfg
+            except Exception:
+                continue
     return {"models": {}, "active_model": None}
 
 def load_session() -> dict:
@@ -152,8 +157,13 @@ def check_and_calibrate(cfg: dict, interactive: bool = True) -> dict:
             continue
         result = calibrate_model(name, prompts)
         cfg.setdefault("models", {})[name] = result
+        # Atomic save
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cfg, indent=2))
+        if CONFIG_PATH.exists():
+            CONFIG_PATH.replace(CONFIG_PATH.with_suffix(".json.bak"))
+        tmp.replace(CONFIG_PATH)
         CONSOLE.print(f"  [green]Saved calibration for {name}[/green]")
 
     # Offer recalibration of already-calibrated models
@@ -240,51 +250,82 @@ def recalibrate_model_flow(cfg: dict, target_model: str = None) -> dict:
     return cfg
 
 
+def _composite_score(name: str, data: dict) -> float:
+    """
+    Composite model ranking: 70% empirical accuracy + 30% parameter capacity.
+    Hard-disqualifies models with <5% calibration accuracy (likely broken/incompatible).
+    This prevents broken models (0% accuracy) from being auto-selected over working ones.
+    """
+    cal_acc = data.get("calibration_acc", 0.0)
+    cap_score = data.get("capability_score", 1)  # 1-10 scale
+    if cal_acc < 0.05:
+        return -1.0  # disqualified: model is broken or incompatible
+    normalized_cap = cap_score / 10.0
+    return round(0.70 * cal_acc + 0.30 * normalized_cap, 4)
+
+
 def select_active_model(cfg: dict, interactive: bool = True) -> str | None:
     """
     Let user pick which calibrated model to use this session.
-    If non-interactive, automatically picks the highest capability calibrated model.
+    If non-interactive, automatically picks the highest composite-score calibrated model.
+    Models scoring < 5% accuracy are disqualified (likely broken/incompatible).
     Returns model name or None (remote-only).
     """
     models = cfg.get("models", {})
     if not models:
         return None
 
-    sorted_models = sorted(models.items(), key=lambda x: -x[1]["capability_score"])
+    # v2: sort by composite score (empirical accuracy weighted), not just parameter count
+    sorted_models = sorted(
+        models.items(),
+        key=lambda x: _composite_score(x[0], x[1]),
+        reverse=True
+    )
+    # Filter out disqualified models from display
+    qualified = [(n, d) for n, d in sorted_models if _composite_score(n, d) >= 0]
 
     if not interactive:
         # Auto-select best model for non-interactive execution
-        if sorted_models:
-            name = sorted_models[0][0]
+        if qualified:
+            name, data = qualified[0]
             CONSOLE.print(f"  [green]Auto-selected local model:[/green] [bold]{name}[/bold]  "
-                          f"(cal acc={models[name]['calibration_acc']*100:.1f}%)\n")
+                          f"(cal acc={data['calibration_acc']*100:.1f}%  "
+                          f"composite={_composite_score(name, data):.3f})\n")
             return name
+        elif sorted_models:
+            CONSOLE.print("  [yellow]All models scored < 5% accuracy — running remote-only mode.[/yellow]\n")
         return None
 
-    if len(sorted_models) == 1:
-        name = sorted_models[0][0]
+    if not qualified:
+        CONSOLE.print("  [yellow]No qualified local models (all < 5% accuracy). Running remote-only.[/yellow]\n")
+        return None
+
+    if len(qualified) == 1:
+        name, data = qualified[0]
         CONSOLE.print(f"  [green]Using local model:[/green] [bold]{name}[/bold]  "
-                      f"(cal acc={models[name]['calibration_acc']*100:.1f}%, "
-                      f"threshold={models[name]['local_threshold']})\n")
+                      f"(cal acc={data['calibration_acc']*100:.1f}%, "
+                      f"threshold={data['local_threshold']})\n")
         return name
 
     CONSOLE.print("\n  [bold]Select local model for this session:[/bold]")
-    for i, (name, data) in enumerate(sorted_models):
+    for i, (name, data) in enumerate(qualified):
+        comp   = _composite_score(name, data)
         local_pct = int((1 - data["local_threshold"]) * 100)
         CONSOLE.print(f"  [{i+1}] [cyan]{name}[/cyan]  "
                       f"cal={data['calibration_acc']*100:.0f}%  "
+                      f"composite={comp:.3f}  "
                       f"threshold={data['local_threshold']}  "
                       f"~{local_pct}% routed locally")
-    CONSOLE.print(f"  [{len(sorted_models)+1}] Remote-only (no local model)")
+    CONSOLE.print(f"  [{len(qualified)+1}] Remote-only (no local model)")
 
     while True:
         choice = Prompt.ask("  Choose", default="1")
         try:
             idx = int(choice) - 1
-            if idx == len(sorted_models):
+            if idx == len(qualified):
                 return None
-            if 0 <= idx < len(sorted_models):
-                return sorted_models[idx][0]
+            if 0 <= idx < len(qualified):
+                return qualified[idx][0]
         except ValueError:
             pass
         CONSOLE.print("  [red]Invalid choice.[/red]")
@@ -366,7 +407,7 @@ def route_prompt(prompt: str, active_model: str | None,
     response     = ""
 
     if is_simple and has_local:
-        # ── Simple prompt + local model available: route directly to local ──
+        # ── Simple prompt + local model available: route to local ──
         CONSOLE.print(Panel(
             f"[bold green]Gate 0: SIMPLE -> LOCAL  ({active_model})[/bold green]\n"
             f"[dim]Bypassing ML router. 0 Fireworks tokens.[/dim]",
@@ -374,11 +415,37 @@ def route_prompt(prompt: str, active_model: str | None,
         ))
         CONSOLE.print(Rule("[bold white]Inference  (Local)[/bold white]", style="green"))
         CONSOLE.print(f"  [green]Calling Ollama ({active_model})...[/green]", end="")
-        response, latency = local_gen(prompt, active_model)
-        tokens_baseline   = max(len(response.split()) * 3, 150)
-        tokens_saved      = tokens_baseline
+        raw_response, latency = local_gen(prompt, active_model)
         CONSOLE.print(f"  done in {latency:.2f}s")
-        dest = "local"
+
+        # ── Gate 4: Local Correctness Verification ─────────────────────────
+        # Get the classified domain for context-aware verification
+        _gate4_domain = "factual"
+        if capability_profile is not None:
+            from inference_wrapper.difficulty_classifier import classify
+            _gate4_domain = classify(prompt, feats).domain
+
+        is_valid, verify_reason = verify_local_response(raw_response, domain=_gate4_domain)
+
+        if is_valid:
+            response       = raw_response
+            tokens_baseline = max(len(response.split()) * 3, 150)
+            tokens_saved    = tokens_baseline
+            dest = "local"
+            CONSOLE.print(f"  [dim]Gate 4 ✓ {verify_reason}[/dim]")
+        else:
+            # Gate 4 FAILED: local model produced garbage — escalate silently to Tier1
+            CONSOLE.print(Panel(
+                f"[yellow]Gate 4: Local FAIL — Escalating to Tier1[/yellow]\n"
+                f"[dim]Reason: {verify_reason}[/dim]",
+                border_style="yellow", padding=(0, 2)
+            ))
+            CONSOLE.print(f"  [cyan]Calling Fireworks Tier 1 (gpt-oss-20b, escalated)...[/cyan]", end="")
+            response, tokens_used, latency = call_tier("tier1", prompt)
+            tokens_baseline = max(int(tokens_used * 2.8), tokens_used + 200)
+            tokens_saved    = max(tokens_baseline - tokens_used, 0)
+            CONSOLE.print(f"  done in {latency:.2f}s  [{tokens_used} tokens]")
+            dest = "tier1"
 
     else:
         # ── Not simple (or no local model): ML router decides tier1 vs tier2 ──

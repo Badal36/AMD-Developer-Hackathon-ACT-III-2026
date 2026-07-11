@@ -42,13 +42,23 @@ FORCE = "--force" in sys.argv
 # Calibration curve: calibration accuracy -> local routing threshold
 # ---------------------------------------------------------------------------
 def acc_to_threshold(acc: float) -> float:
-    """Higher accuracy local model -> lower threshold -> routes more locally."""
-    if   acc >= 0.90: return 0.28
-    elif acc >= 0.80: return 0.40
-    elif acc >= 0.70: return 0.52
-    elif acc >= 0.60: return 0.65
-    elif acc >= 0.50: return 0.78
-    else:             return 0.95   # very weak -> almost never route locally
+    """
+    Smooth, monotonic mapping: calibration accuracy -> routing threshold.
+
+    Uses exponential decay so a 1% accuracy change never causes a 30%
+    threshold jump (the old step-function bug). Mapping:
+      acc=0.00 -> threshold=0.97  (disqualified: almost never route locally)
+      acc=0.20 -> threshold=0.57  (weak but usable for trivial prompts)
+      acc=0.40 -> threshold=0.44
+      acc=0.60 -> threshold=0.34
+      acc=0.80 -> threshold=0.26
+      acc=1.00 -> threshold=0.25  (floor: always a small remote escape valve)
+    """
+    import math
+    acc = max(0.0, min(1.0, acc))  # clamp to [0, 1]
+    # Exponential decay: 0.97 * e^(-2.9 * acc), floored at 0.25
+    raw = 0.97 * math.exp(-2.9 * acc)
+    return round(max(0.25, min(0.97, raw)), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -227,34 +237,24 @@ def calibrate_model(model_name: str, prompts: list) -> dict:
     )
 
     # ── Build CapabilityProfile ───────────────────────────────────────────
+    # CRITICAL: Only store MEASURED values. None = no evidence = defer to ML router.
+    # We never bootstrap/fabricate scores for untested domains — doing so caused
+    # the router to confidently route to models for tasks they've never been tested on.
     profile = CapabilityProfile(model_name=model_name)
     from calibration.profile import DOMAINS
     for domain in DOMAINS:
         for lv in LEVELS:
             key = (domain, lv)
             s   = domain_level_stats.get(key)
-            if s and s["n"] >= 2:   # need at least 2 samples to trust the score
+            # Require at least 3 samples for statistical validity (raised from 2)
+            if s and s["n"] >= 3:
                 profile.acc[domain][lv] = round(s["c"] / s["n"], 3)
             else:
-                profile.acc[domain][lv] = None  # unmeasured
+                profile.acc[domain][lv] = None  # No evidence — NEVER invent a number
 
-    # For unmeasured cells, bootstrap from overall acc as a conservative estimate
-    for domain in DOMAINS:
-        for lv in LEVELS:
-            if profile.acc[domain][lv] is None:
-                # Use source_stats if we have a matching domain source
-                src_acc = None
-                for src, dom in SOURCE_TO_DOMAIN.items():
-                    if dom == domain and src in source_stats:
-                        src_acc = source_stats[src]["acc"] if "acc" in source_stats[src] \
-                                  else source_stats[src]["c"] / max(source_stats[src]["n"], 1)
-                        break
-                base = src_acc if src_acc is not None else acc
-                # Apply decay by level
-                decay = {"L1": 0.20, "L2": 0.08, "L3": -0.12, "L4": -0.38}
-                profile.acc[domain][lv] = round(
-                    max(0.0, min(1.0, base + decay.get(lv, 0))), 3
-                )
+    # NOTE: Bootstrapping block intentionally removed (v2).
+    # Unmeasured cells remain None. The routing gate (profile.should_route_local)
+    # returns False for None cells, deferring safely to the ML router.
 
     CONSOLE.print(f"  [dim]Capability profile built: {profile.summary()}[/dim]")
 
@@ -307,8 +307,14 @@ def load_config() -> dict:
     return {"models": {}, "active_model": None}
 
 def save_config(cfg: dict):
+    """Atomic save: write to .tmp, backup old .bak, then replace. Prevents data loss on crash."""
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    tmp_path = CONFIG_PATH.with_suffix(".json.tmp")
+    bak_path = CONFIG_PATH.with_suffix(".json.bak")
+    tmp_path.write_text(json.dumps(cfg, indent=2))
+    if CONFIG_PATH.exists():
+        CONFIG_PATH.replace(bak_path)
+    tmp_path.replace(CONFIG_PATH)
 
 
 # ---------------------------------------------------------------------------

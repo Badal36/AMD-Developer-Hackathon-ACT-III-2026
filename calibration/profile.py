@@ -97,7 +97,9 @@ class CapabilityProfile:
 
         score = self.acc.get(domain, {}).get(level)
         if score is None:
-            # Unmeasured: fall through to ML router
+            # No calibration evidence for this (domain, level) pair.
+            # Returning False defers the decision to the ML router, which is
+            # always safer than routing based on fabricated/bootstrapped data.
             return False, f"No calibration data for {domain}/{level} — deferring to ML router"
 
         max_lv = self.max_local_level(domain)
@@ -225,12 +227,10 @@ def load_profile(model_name: str) -> Optional[CapabilityProfile]:
     if "capability_profile" in model_data:
         return CapabilityProfile.from_dict(model_name, model_data)
 
-    # Legacy flat format: bootstrap from calibration_acc + source_stats
-    cal_acc    = model_data.get("calibration_acc", 0.0)
-    src_stats  = model_data.get("source_stats", {})
-    return CapabilityProfile.bootstrap_from_calibration_acc(
-        model_name, cal_acc, src_stats
-    )
+    # Legacy flat format: no capability_profile available.
+    # v2 policy: do NOT bootstrap fabricated scores from calibration_acc.
+    # Return None so the caller falls back to the ML router (safer than invented data).
+    return None
 
 
 def save_profile(profile: CapabilityProfile, extra: dict = None):

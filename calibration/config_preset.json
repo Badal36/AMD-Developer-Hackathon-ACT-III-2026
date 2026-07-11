@@ -1,77 +1,126 @@
 {
   "models": {
+    "hf.co/mradermacher/OpenELM-270M-GGUF:latest": {
+      "calibration_acc": 0.216,
+      "local_threshold": 0.565,
+      "capability_score": 3,
+      "source_stats": {
+        "humaneval": {"acc": 0.867},
+        "arc":       {"acc": 0.22},
+        "mmlu":      {"acc": 0.18},
+        "gsm8k":     {"acc": 0.0},
+        "truthfulqa":{"acc": 0.0}
+      },
+      "capability_profile": {
+        "math":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "factual":     {"L1": null, "L2": null, "L3": null, "L4": null},
+        "code":        {"L1": 0.867, "L2": 0.77, "L3": 0.60, "L4": null},
+        "language":    {"L1": null, "L2": null, "L3": null, "L4": null},
+        "reasoning":   {"L1": null, "L2": null, "L3": null, "L4": null},
+        "instruction": {"L1": null, "L2": null, "L3": null, "L4": null}
+      },
+      "routing_thresholds": {
+        "math":        {"max_local_level": null, "confidence_floor": 0.65},
+        "factual":     {"max_local_level": null, "confidence_floor": 0.65},
+        "code":        {"max_local_level": "L3",  "confidence_floor": 0.65},
+        "language":    {"max_local_level": null, "confidence_floor": 0.65},
+        "reasoning":   {"max_local_level": null, "confidence_floor": 0.65},
+        "instruction": {"max_local_level": null, "confidence_floor": 0.65}
+      },
+      "calibrated_at": "2026-07-11T10:00:00",
+      "prompts_run": 116
+    },
     "qwen2.5:0.5b": {
-      "calibration_acc": 0.28,
-      "local_threshold": 0.95,
+      "calibration_acc": 0.147,
+      "local_threshold": 0.652,
       "capability_score": 2,
       "source_stats": {
-        "mmlu": {
-          "acc": 0.2
-        },
-        "arc": {
-          "acc": 0.32
-        },
-        "gsm8k": {
-          "acc": 0.04
-        },
-        "humaneval": {
-          "acc": 0.933
-        },
-        "truthfulqa": {
-          "acc": 0.0
-        }
+        "mmlu":      {"acc": 0.20},
+        "arc":       {"acc": 0.32},
+        "gsm8k":     {"acc": 0.04},
+        "humaneval": {"acc": 0.933},
+        "truthfulqa":{"acc": 0.0}
+      },
+      "capability_profile": {
+        "math":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "factual":     {"L1": null, "L2": null, "L3": null, "L4": null},
+        "code":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "language":    {"L1": null, "L2": null, "L3": null, "L4": null},
+        "reasoning":   {"L1": null, "L2": null, "L3": null, "L4": null},
+        "instruction": {"L1": null, "L2": null, "L3": null, "L4": null}
+      },
+      "routing_thresholds": {
+        "math":        {"max_local_level": null, "confidence_floor": 0.65},
+        "factual":     {"max_local_level": null, "confidence_floor": 0.65},
+        "code":        {"max_local_level": null, "confidence_floor": 0.65},
+        "language":    {"max_local_level": null, "confidence_floor": 0.65},
+        "reasoning":   {"max_local_level": null, "confidence_floor": 0.65},
+        "instruction": {"max_local_level": null, "confidence_floor": 0.65}
       },
       "calibrated_at": "2026-07-11T03:45:25",
       "prompts_run": 100
     },
-    "smollm2:135m": {
-      "calibration_acc": 0.21,
-      "local_threshold": 0.95,
-      "capability_score": 1,
-      "source_stats": {
-        "mmlu": {
-          "acc": 0.12
-        },
-        "arc": {
-          "acc": 0.16
-        },
-        "gsm8k": {
-          "acc": 0.0
-        },
-        "humaneval": {
-          "acc": 0.933
-        },
-        "truthfulqa": {
-          "acc": 0.0
-        }
-      },
-      "calibrated_at": "2026-07-11T03:50:14",
-      "prompts_run": 100
-    },
     "smollm2:360m": {
       "calibration_acc": 0.28,
-      "local_threshold": 0.95,
+      "local_threshold": 0.527,
       "capability_score": 1,
       "source_stats": {
-        "mmlu": {
-          "acc": 0.28
-        },
-        "arc": {
-          "acc": 0.32
-        },
-        "gsm8k": {
-          "acc": 0.0
-        },
-        "humaneval": {
-          "acc": 0.867
-        },
-        "truthfulqa": {
-          "acc": 0.0
-        }
+        "mmlu":      {"acc": 0.28},
+        "arc":       {"acc": 0.32},
+        "gsm8k":     {"acc": 0.0},
+        "humaneval": {"acc": 0.867},
+        "truthfulqa":{"acc": 0.0}
+      },
+      "capability_profile": {
+        "math":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "factual":     {"L1": null, "L2": null, "L3": null, "L4": null},
+        "code":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "language":    {"L1": null, "L2": null, "L3": null, "L4": null},
+        "reasoning":   {"L1": null, "L2": null, "L3": null, "L4": null},
+        "instruction": {"L1": null, "L2": null, "L3": null, "L4": null}
+      },
+      "routing_thresholds": {
+        "math":        {"max_local_level": null, "confidence_floor": 0.65},
+        "factual":     {"max_local_level": null, "confidence_floor": 0.65},
+        "code":        {"max_local_level": null, "confidence_floor": 0.65},
+        "language":    {"max_local_level": null, "confidence_floor": 0.65},
+        "reasoning":   {"max_local_level": null, "confidence_floor": 0.65},
+        "instruction": {"max_local_level": null, "confidence_floor": 0.65}
       },
       "calibrated_at": "2026-07-11T04:20:54",
       "prompts_run": 100
+    },
+    "smollm2:135m": {
+      "calibration_acc": 0.21,
+      "local_threshold": 0.566,
+      "capability_score": 1,
+      "source_stats": {
+        "mmlu":      {"acc": 0.12},
+        "arc":       {"acc": 0.16},
+        "gsm8k":     {"acc": 0.0},
+        "humaneval": {"acc": 0.933},
+        "truthfulqa":{"acc": 0.0}
+      },
+      "capability_profile": {
+        "math":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "factual":     {"L1": null, "L2": null, "L3": null, "L4": null},
+        "code":        {"L1": null, "L2": null, "L3": null, "L4": null},
+        "language":    {"L1": null, "L2": null, "L3": null, "L4": null},
+        "reasoning":   {"L1": null, "L2": null, "L3": null, "L4": null},
+        "instruction": {"L1": null, "L2": null, "L3": null, "L4": null}
+      },
+      "routing_thresholds": {
+        "math":        {"max_local_level": null, "confidence_floor": 0.65},
+        "factual":     {"max_local_level": null, "confidence_floor": 0.65},
+        "code":        {"max_local_level": null, "confidence_floor": 0.65},
+        "language":    {"max_local_level": null, "confidence_floor": 0.65},
+        "reasoning":   {"max_local_level": null, "confidence_floor": 0.65},
+        "instruction": {"max_local_level": null, "confidence_floor": 0.65}
+      },
+      "calibrated_at": "2026-07-11T03:50:14",
+      "prompts_run": 100
     }
   },
-  "active_model": "qwen2.5:0.5b"
+  "_pool_note": "v2 model pool — plug any Ollama model in, calibration system will score and rank automatically. New models pending calibration: qwen3:0.6b, deepseek-r1:1.5b, llama3.2:1b",
+  "active_model": "hf.co/mradermacher/OpenELM-270M-GGUF:latest"
 }

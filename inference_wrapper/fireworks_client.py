@@ -7,8 +7,8 @@ import os, time
 from typing import Tuple
 from openai import OpenAI
 
-TIER1_MODEL = "accounts/fireworks/models/gpt-oss-20b"
-TIER2_MODEL = "accounts/fireworks/models/glm-5p2"
+TIER1_MODEL = os.environ.get("TIER1_MODEL", "accounts/fireworks/models/gpt-oss-20b")
+TIER2_MODEL = os.environ.get("TIER2_MODEL", "accounts/fireworks/models/glm-5p2")
 
 TIER_DISPLAY = {
     "tier1": "gpt-oss-20b  [cheap]",
