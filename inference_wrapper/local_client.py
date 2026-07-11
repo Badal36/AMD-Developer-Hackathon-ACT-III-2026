@@ -16,7 +16,7 @@ _SCORES = {
     "qwen2.5:14b": 8, "qwen2.5:7b": 7, "llama3.1:8b": 7, "llama3.2:8b": 7,
     "mistral:7b": 6, "gemma2:9b": 7, "phi4": 8, "phi3": 6,
     "llama3.2:3b": 5, "qwen2.5:3b": 5, "gemma:2b": 4,
-    "llama3.2:1b": 3, "openelm": 2, "mobilellm": 2, "tinyllama": 1,
+    "llama3.2:1b": 3, "openelm": 3, "mobilellm": 4, "tinyllama": 1,
 }
 
 
