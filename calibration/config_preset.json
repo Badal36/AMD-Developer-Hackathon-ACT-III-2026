@@ -121,6 +121,6 @@
       "prompts_run": 100
     }
   },
-  "_pool_note": "v2 model pool — plug any Ollama model in, calibration system will score and rank automatically. New models pending calibration: qwen3:0.6b, deepseek-r1:1.5b",
+  "_pool_note": "v2 model pool — plug any Ollama model in, calibration system will score and rank automatically. New models pending calibration: deepseek-r1:1.5b",
   "active_model": "hf.co/mradermacher/OpenELM-270M-GGUF:latest"
 }
