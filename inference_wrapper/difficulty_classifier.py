@@ -247,6 +247,15 @@ def classify(prompt: str, feats: Dict[str, Any] = None) -> DifficultyResult:
             difficulty_score = max(difficulty_score, 2.8)   # L4 proof tasks
     if domain == "reasoning":
         difficulty_score = max(difficulty_score, 1.0)   # reasoning starts at L2/L3
+        # Boost reasoning to L3 when analysis/ethical/step-by-step patterns are present
+        _REASONING_HARD = re.compile(
+            r"\banalyze\b|\banalyse\b|\bethic\b|\bimplication|\bconsequence|"
+            r"\bstep.by.step\b|\bexplain.{0,15}why\b|\bgeopolit|"
+            r"\bcompare and contrast\b|\btrade.off\b|\bpros and cons\b",
+            re.I,
+        )
+        if _REASONING_HARD.search(p):
+            difficulty_score = max(difficulty_score, 1.8)  # floor at L3
 
     # MCQ: floor at L2, cap at L3 (MCQs rarely need frontier model)
     if _MCQ.search(p) or task_type == "mcq":
