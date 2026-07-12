@@ -17,7 +17,7 @@ from sentence_transformers import SentenceTransformer, util
 
 CONSOLE = Console()
 
-def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000):
+def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000, routing_only=False):
     dataset_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "datasets", dataset_filename)
     
     if not os.path.exists(dataset_path):
@@ -36,15 +36,16 @@ def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000):
             prompts_data.append({"prompt": prompt, "truth": truth})
 
     CONSOLE.print(f"[bold cyan]Loaded {len(prompts_data)} prompts from {dataset_filename}[/bold cyan]")
-    CONSOLE.print("[bold cyan]Loading SentenceTransformer (all-MiniLM-L6-v2) for grading...[/bold cyan]")
-    try:
-        embedder = SentenceTransformer('all-MiniLM-L6-v2')
-    except Exception as e:
-        CONSOLE.print(f"[red]Failed to load sentence-transformers: {e}[/red]")
-        return
-        
-    truth_texts = [d["truth"] for d in prompts_data]
-    truth_embeddings = embedder.encode(truth_texts, convert_to_tensor=True)
+    if not routing_only:
+        CONSOLE.print("[bold cyan]Loading SentenceTransformer (all-MiniLM-L6-v2) for grading...[/bold cyan]")
+        try:
+            embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        except Exception as e:
+            CONSOLE.print(f"[red]Failed to load sentence-transformers: {e}[/red]")
+            return
+            
+        truth_texts = [d["truth"] for d in prompts_data]
+        truth_embeddings = embedder.encode(truth_texts, convert_to_tensor=True)
 
     stats = {
         "router_time": 0.0,
@@ -57,43 +58,47 @@ def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000):
         "gate4_fails": 0,
     }
 
-    CONSOLE.print(f"[bold magenta]Starting Smoke Test on {len(prompts_data)} prompts...[/bold magenta]")
+    CONSOLE.print(f"[bold magenta]Starting {'Routing-Only ' if routing_only else ''}Smoke Test on {len(prompts_data)} prompts...[/bold magenta]")
     
-    # We will test Qwen for local
     local_model = "qwen2.5:0.5b"
 
     for i, data in enumerate(prompts_data):
         prompt = data["prompt"]
-        truth_emb = truth_embeddings[i]
         
         # 1. Routing Speed & Decision
         t0 = time.time()
         is_local, reason, conf = predict_local_viability(prompt)
         stats["router_time"] += (time.time() - t0)
         
+        if routing_only:
+            if is_local: stats["local_routed"] += 1
+            else: stats["cloud_routed"] += 1
+            continue
+        
+        truth_emb = truth_embeddings[i]
+        
         # 2. Generation & Accuracy
         if is_local:
-            stats["local_routed"] += 1
             gen_t0 = time.time()
             raw_response, lat = generate(prompt, local_model, max_tokens=150)
-            stats["local_generation_time"] += (time.time() - gen_t0)
             
             is_valid, _ = verify_local_response(prompt, raw_response)
             if not is_valid:
                 stats["gate4_fails"] += 1
-                # If Gate 4 fails, it would normally escalate to Cloud.
-                # For this benchmark, we'll mark it incorrect for Local.
+                is_local = False # Escalate to cloud
             else:
+                stats["local_generation_time"] += (time.time() - gen_t0)
+                stats["local_routed"] += 1
                 resp_emb = embedder.encode(raw_response, convert_to_tensor=True)
                 score = util.cos_sim(truth_emb, resp_emb)[0][0].item()
                 if score > 0.65:
                     stats["local_correct"] += 1
-        else:
+        
+        if not is_local:
             stats["cloud_routed"] += 1
             gen_t0 = time.time()
             try:
-                # We use Tier 1 for basic cloud routing fallback
-                response, _ = call_tier("tier1", prompt)
+                response, _, _ = call_tier("tier1", prompt)
                 stats["cloud_generation_time"] += (time.time() - gen_t0)
                 
                 resp_emb = embedder.encode(response, convert_to_tensor=True)
@@ -101,7 +106,6 @@ def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000):
                 if score > 0.65:
                     stats["cloud_correct"] += 1
             except Exception as e:
-                # If Fireworks fails (rate limit, etc), just skip scoring it
                 pass
 
         if (i + 1) % 50 == 0:
@@ -111,7 +115,7 @@ def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000):
     CONSOLE.print("\n[bold green]Smoke Test Complete![/bold green]")
     
     total = stats["local_routed"] + stats["cloud_routed"]
-    avg_router_ms = (stats["router_time"] / total) * 1000
+    avg_router_ms = (stats["router_time"] / max(1, len(prompts_data))) * 1000
     
     local_acc = (stats["local_correct"] / max(1, stats["local_routed"])) * 100
     cloud_acc = (stats["cloud_correct"] / max(1, stats["cloud_routed"])) * 100
@@ -122,12 +126,18 @@ def run_smoke_test(dataset_filename="databricks-dolly-15k.jsonl", limit=1000):
     table.add_column("Value", justify="right", style="green")
     
     table.add_row("Avg Routing Speed", f"{avg_router_ms:.2f} ms / prompt")
-    table.add_row("Routed to Local", f"{stats['local_routed']} ({stats['local_routed']/total*100:.1f}%)")
-    table.add_row("Routed to Cloud", f"{stats['cloud_routed']} ({stats['cloud_routed']/total*100:.1f}%)")
-    table.add_row("Local Accuracy (Sim > 0.65)", f"{local_acc:.1f}%")
-    table.add_row("Cloud Accuracy (Sim > 0.65)", f"{cloud_acc:.1f}%")
-    table.add_row("Total System Accuracy", f"{total_acc:.1f}%")
-    table.add_row("Gate 4 Fails (Local Garbage)", str(stats["gate4_fails"]))
+    table.add_row("Routed to Local", f"{stats['local_routed']} ({stats['local_routed']/max(1,total)*100:.1f}%)")
+    table.add_row("Routed to Cloud", f"{stats['cloud_routed']} ({stats['cloud_routed']/max(1,total)*100:.1f}%)")
+    
+    if not routing_only:
+        avg_local_lat = (stats["local_generation_time"] / max(1, stats["local_routed"])) * 1000
+        avg_cloud_lat = (stats["cloud_generation_time"] / max(1, stats["cloud_routed"])) * 1000
+        table.add_row("Avg Local Latency", f"{avg_local_lat:.0f} ms")
+        table.add_row("Avg Cloud Latency", f"{avg_cloud_lat:.0f} ms")
+        table.add_row("Local Accuracy (Sim > 0.65)", f"{local_acc:.1f}%")
+        table.add_row("Cloud Accuracy (Sim > 0.65)", f"{cloud_acc:.1f}%")
+        table.add_row("Total System Accuracy", f"{total_acc:.1f}%")
+        table.add_row("Gate 4 Fails (Escalated)", str(stats["gate4_fails"]))
     
     CONSOLE.print(table)
 
@@ -135,5 +145,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="databricks-dolly-15k.jsonl")
     parser.add_argument("--limit", type=int, default=1000)
+    parser.add_argument("--routing-only", action="store_true")
     args = parser.parse_args()
-    run_smoke_test(args.dataset, args.limit)
+    run_smoke_test(args.dataset, args.limit, args.routing_only)
